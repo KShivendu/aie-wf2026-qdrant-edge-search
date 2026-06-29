@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIE WF2026 · Qdrant Edge search</title>
+<style>
+  :root{--bg:#0f1115;--panel:#171a21;--panel2:#1f232c;--line:#2a2f3a;--ink:#e8eaf0;--muted:#9aa3b2;--faint:#6b7385;
+    --vec:#6c8cff;--vec-bg:#1a2348;--kw:#f0b541;--kw-bg:#3a2f12;--both:#3ddc97;--accent:#6c8cff;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
+  .wrap{max-width:920px;margin:0 auto;padding:28px 20px 80px}
+  h1{font-size:21px;margin:0 0 4px;letter-spacing:-.01em}
+  .sub{margin:0 0 20px;color:var(--muted);font-size:13.5px}
+  .sub b{color:var(--both)}
+  .searchbar{display:flex;gap:8px;position:sticky;top:0;background:var(--bg);padding:10px 0;z-index:5}
+  #q{flex:1;background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:12px 14px;font-size:15px;outline:none}
+  #q:focus{border-color:var(--accent)}
+  #go{background:var(--accent);color:#0b0e14;border:0;border-radius:10px;padding:0 18px;font-weight:600;cursor:pointer}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+  .chip{background:var(--panel2);border:1px solid var(--line);color:var(--muted);border-radius:20px;padding:5px 11px;font-size:12.5px;cursor:pointer}
+  .chip:hover{color:var(--ink);border-color:var(--accent)}
+  #status{font-size:12.5px;color:var(--muted);margin:12px 0;min-height:18px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:6px 0 18px}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:middle}
+  .summary{font-size:13px;color:var(--faint);margin:0 0 12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:10px}
+  .card.both{border-left-color:var(--both)}.card.vector{border-left-color:var(--vec)}.card.bm25{border-left-color:var(--kw)}
+  .card h3{margin:0 0 6px;font-size:15.5px;font-weight:600}
+  .meta{font-size:12.5px;color:var(--muted);margin:0 0 8px}.meta b{color:var(--ink);font-weight:500}
+  .snip{font-size:13px;color:var(--faint);margin:6px 0 0;max-height:3.1em;overflow:hidden}
+  .badges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:7px}
+  .badge{font-size:11.5px;font-weight:600;border-radius:6px;padding:3px 8px}
+  .badge.vector{background:var(--vec-bg);color:var(--vec)}.badge.bm25{background:var(--kw-bg);color:var(--kw)}
+  .badge.hybrid{background:#10311f;color:var(--both)}
+  .badge .sub2{font-weight:400;opacity:.8}
+  mark{background:rgba(240,181,65,.28);color:inherit;border-radius:2px;padding:0 1px}
+  .empty{color:var(--faint);font-size:13px;padding:20px 0}
+</style></head>
+<body><div class="wrap">
+  <h1>AI Engineer World's Fair 2026 — Keyword vs Vector Search</h1>
+  <p class="sub">Powered by <b>embedded Qdrant Edge</b> (qdrant-edge-py, in-process) behind FastAPI — no cloud. Hybrid: dense <b>bge-small</b> + sparse <b>BM25</b> (real, in-engine, IDF) fused with <b>RRF</b>. Results ranked by hybrid; badged by which retriever found them.</p>
+  <div class="searchbar"><input id="q" placeholder="e.g. distributed systems reliability" autocomplete="off"><button id="go">Search</button></div>
+  <div class="chips" id="chips"></div>
+  <div id="status"></div>
+  <div class="legend">
+    <span><span class="dot" style="background:var(--vec)"></span>Dense vector only</span>
+    <span><span class="dot" style="background:var(--kw)"></span>BM25 only (lexical)</span>
+    <span><span class="dot" style="background:var(--both)"></span>Found by both</span>
+  </div>
+  <div class="summary" id="summary"></div>
+  <div id="results"></div>
+</div>
+<script>
+const $=s=>document.querySelector(s), qEl=$('#q'), goEl=$('#go');
+function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function hl(text,terms){let h=esc(text);(terms||[]).forEach(t=>{h=h.replace(new RegExp('('+t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'),'<mark>$1</mark>');});return h;}
+async function run(){
+  const q=qEl.value.trim(); if(!q) return;
+  goEl.disabled=true; $('#status').textContent='Searching Qdrant Edge…';
+  try{
+    const r=await fetch('/search?q='+encodeURIComponent(q));
+    const d=await r.json();
+    const s=d.summary;
+    $('#summary').textContent=`${s.total} results · ${s.both} found by both · ${s.vector_only} dense-only · ${s.bm25_only} BM25-only · ranked by ${s.ranked_by} · ${s.engine}`;
+    $('#results').innerHTML = !d.results.length ? '<div class="empty">No results.</div>' : d.results.map(t=>{
+      const b=[];
+      if(t.hybrid) b.push(`<span class="badge hybrid">▍Hybrid <span class="sub2">#${t.hybrid.rank} · ${t.hybrid.score.toFixed(4)}</span></span>`);
+      if(t.vector) b.push(`<span class="badge vector">▍Dense <span class="sub2">#${t.vector.rank} · ${t.vector.score.toFixed(3)}</span></span>`);
+      if(t.bm25) b.push(`<span class="badge bm25">▍BM25 <span class="sub2">#${t.bm25.rank} · ${t.bm25.score.toFixed(3)}</span></span>`);
+      const meta=[t.track,t.day,t.time,t.room].filter(Boolean).join(' · ');
+      const km=t.terms||[];
+      return `<div class="card ${t.source}"><div class="badges">${b.join('')}</div>
+        <h3>${hl(t.title,km)}</h3>
+        <div class="meta">${esc(meta)}${t.speakers&&t.speakers.length?` · <b>${esc(t.speakers.join(', '))}</b>`:''}</div>
+        ${t.description?`<div class="snip">${hl(t.description,km)}…</div>`:''}</div>`;
+    }).join('');
+    $('#status').textContent='';
+  }catch(e){ $('#status').textContent='Error: '+e.message; }
+  goEl.disabled=false;
+}
+const EX=['vector database','distributed systems reliability','mechanistic interpretability','agent long-term memory','RAG evaluation','multi-tenant search at scale'];
+$('#chips').innerHTML=EX.map(e=>`<span class="chip">${e}</span>`).join('');
+$('#chips').addEventListener('click',e=>{if(e.target.classList.contains('chip')){qEl.value=e.target.textContent;run();}});
+goEl.addEventListener('click',run); qEl.addEventListener('keydown',e=>{if(e.key==='Enter')run();});
+fetch('/health').then(r=>r.json()).then(h=>{$('#status').textContent=`Ready — ${h.talks} talks in embedded Qdrant Edge · dense ${h.dense_model} + sparse ${h.sparse_model}.`;qEl.focus();});
+</script></body></html>

@@ -1,0 +1,4 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+qdrant-edge-py>=0.7
+fastembed>=0.8
