@@ -12,9 +12,12 @@ Run:
   uvicorn server:app --reload    # open http://localhost:8000
 """
 import json
+import os
+import shutil
+import tarfile
+import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
-import tempfile
 
 from fastembed import TextEmbedding, SparseTextEmbedding
 from fastapi import FastAPI, Query as Q
@@ -33,7 +36,12 @@ DENSE, SPARSE = "bge", "bm25"
 TOPK = 15
 RRF_K = 60
 HERE = Path(__file__).parent
+INDEX_DIR = HERE / "aie_edge_index"
+TARBALL = HERE / "aie-edge-index.tar.gz"
+RELEASE_URL = os.environ.get("AIE_INDEX_URL",
+    "https://github.com/KShivendu/aie-wf2026-qdrant-edge-search/releases/download/v1/aie-edge-index.tar.gz")
 STATE = {}
+_emb = {}  # lazily-loaded query embedders
 
 
 def doc_text(t):
@@ -59,19 +67,26 @@ def hl_terms(q):
     return out
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    talks = json.load(open(HERE / "sessions.json"))["sessions"]
-    texts = [doc_text(t) for t in talks]
-    print(f"[startup] dense embed ({DENSE_MODEL}) …")
-    dense = TextEmbedding(DENSE_MODEL)
-    dvecs = list(dense.embed(texts))
-    print(f"[startup] sparse BM25 embed ({SPARSE_MODEL}) …")
-    sparse = SparseTextEmbedding(SPARSE_MODEL)
-    svecs = list(sparse.embed(texts))
+def get_dense():
+    if "dense" not in _emb:
+        print(f"[lazy] loading dense query model {DENSE_MODEL} …")
+        _emb["dense"] = TextEmbedding(DENSE_MODEL)
+    return _emb["dense"]
 
-    shard_dir = tempfile.mkdtemp(prefix="aie_edge_")
-    shard = EdgeShard.create(shard_dir, EdgeConfig(
+def get_sparse():
+    if "sparse" not in _emb:
+        _emb["sparse"] = SparseTextEmbedding(SPARSE_MODEL)
+    return _emb["sparse"]
+
+
+def _build_shard(talks):
+    texts = [doc_text(t) for t in talks]
+    print(f"[startup] no prebuilt index — embedding {len(texts)} talks (dense + BM25) …")
+    dvecs = list(get_dense().embed(texts))
+    svecs = list(get_sparse().embed(texts))
+    shutil.rmtree(INDEX_DIR, ignore_errors=True)
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    shard = EdgeShard.create(str(INDEX_DIR), EdgeConfig(
         vectors={DENSE: EdgeVectorParams(size=DIM, distance=Distance.Cosine)},
         sparse_vectors={SPARSE: EdgeSparseVectorParams(modifier=Modifier.Idf)},
     ))
@@ -84,8 +99,38 @@ async def lifespan(app: FastAPI):
         for i, (t, dv, sv) in enumerate(zip(talks, dvecs, svecs))
     ]
     shard.update(UpdateOperation.upsert_points(pts))
-    STATE.update(shard=shard, dense=dense, sparse=sparse, talks=talks)
-    print(f"[startup] Qdrant Edge hybrid index ready — {len(pts)} points (dense+bm25) in {shard_dir}")
+    shard.flush()
+    return shard
+
+
+def ensure_shard(talks):
+    """Load the prebuilt Qdrant Edge shard; download it from the GitHub release if
+    missing; only re-embed from scratch as a last resort."""
+    if INDEX_DIR.exists():
+        print(f"[startup] loading prebuilt Qdrant Edge shard ← {INDEX_DIR}")
+        return EdgeShard.load(str(INDEX_DIR))
+    if not TARBALL.exists() and RELEASE_URL:
+        try:
+            print(f"[startup] downloading prebuilt index ← {RELEASE_URL}")
+            urllib.request.urlretrieve(RELEASE_URL, TARBALL)
+        except Exception as e:
+            print(f"[startup] release download failed ({e}); will build locally")
+    if TARBALL.exists():
+        print(f"[startup] unpacking {TARBALL.name}")
+        with tarfile.open(TARBALL) as tar:
+            tar.extractall(HERE)
+        if INDEX_DIR.exists():
+            return EdgeShard.load(str(INDEX_DIR))
+    return _build_shard(talks)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    talks = json.load(open(HERE / "sessions.json"))["sessions"]
+    shard = ensure_shard(talks)
+    STATE.update(shard=shard, talks=talks)
+    print(f"[startup] Qdrant Edge ready — {shard.info().points_count} points. "
+          f"Query models load lazily on first /search.")
     yield
     STATE.clear()
 
@@ -93,8 +138,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AIE WF2026 · Qdrant Edge hybrid search", lifespan=lifespan)
 
 
-def _dense_qv(q): return list(STATE["dense"].query_embed(q))[0].tolist()
-def _sparse_qv(q): return to_sparse(list(STATE["sparse"].query_embed(q))[0])
+def _dense_qv(q): return list(get_dense().query_embed(q))[0].tolist()
+def _sparse_qv(q): return to_sparse(list(get_sparse().query_embed(q))[0])
 
 
 def search_dense(q):

@@ -1,4 +1,6 @@
 .venv/
+aie_edge_index/
+aie-edge-index.tar.gz
 __pycache__/
 *.pyc
 *.log
