@@ -23,6 +23,9 @@
   .dot{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:middle}
   .summary{font-size:13px;color:var(--faint);margin:0 0 12px}
   .card{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:10px}
+  a.card{display:block;text-decoration:none;color:inherit;transition:border-color .12s}
+  a.card:hover{border-color:var(--accent)}
+  a.card h3::after{content:" ↗";color:var(--faint);font-weight:400;font-size:13px}
   .card.both{border-left-color:var(--both)}.card.vector{border-left-color:var(--vec)}.card.bm25{border-left-color:var(--kw)}
   .card h3{margin:0 0 6px;font-size:15.5px;font-weight:600}
   .meta{font-size:12.5px;color:var(--muted);margin:0 0 8px}.meta b{color:var(--ink);font-weight:500}
@@ -53,6 +56,7 @@
 const $=s=>document.querySelector(s), qEl=$('#q'), goEl=$('#go');
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 function hl(text,terms){let h=esc(text);(terms||[]).forEach(t=>{h=h.replace(new RegExp('('+t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'),'<mark>$1</mark>');});return h;}
+function talkURL(t){const q=`"${t.title}" ${(t.speakers||[])[0]||''} AI Engineer World's Fair 2026`;return 'https://www.google.com/search?q='+encodeURIComponent(q);}
 async function run(){
   const q=qEl.value.trim(); if(!q) return;
   goEl.disabled=true; $('#status').textContent='Searching Qdrant Edge…';
@@ -68,10 +72,10 @@ async function run(){
       if(t.bm25) b.push(`<span class="badge bm25">▍BM25 <span class="sub2">#${t.bm25.rank} · ${t.bm25.score.toFixed(3)}</span></span>`);
       const meta=[t.track,t.day,t.time,t.room].filter(Boolean).join(' · ');
       const km=t.terms||[];
-      return `<div class="card ${t.source}"><div class="badges">${b.join('')}</div>
+      return `<a class="card ${t.source}" href="${talkURL(t)}" target="_blank" rel="noopener"><div class="badges">${b.join('')}</div>
         <h3>${hl(t.title,km)}</h3>
         <div class="meta">${esc(meta)}${t.speakers&&t.speakers.length?` · <b>${esc(t.speakers.join(', '))}</b>`:''}</div>
-        ${t.description?`<div class="snip">${hl(t.description,km)}…</div>`:''}</div>`;
+        ${t.description?`<div class="snip">${hl(t.description,km)}…</div>`:''}</a>`;
     }).join('');
     $('#status').textContent='';
   }catch(e){ $('#status').textContent='Error: '+e.message; }
