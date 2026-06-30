@@ -36,8 +36,11 @@ DENSE, SPARSE = "bge", "bm25"
 TOPK = 15
 RRF_K = 60
 HERE = Path(__file__).parent
-INDEX_DIR = HERE / "aie_edge_index"
-TARBALL = HERE / "aie-edge-index.tar.gz"
+# shard/tarball go in a writable dir (HF Spaces app dir is read-only at runtime → set AIE_DATA_DIR=/tmp/aie)
+DATA_DIR = Path(os.environ.get("AIE_DATA_DIR", str(HERE)))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+INDEX_DIR = DATA_DIR / "aie_edge_index"
+TARBALL = DATA_DIR / "aie-edge-index.tar.gz"
 RELEASE_URL = os.environ.get("AIE_INDEX_URL",
     "https://github.com/KShivendu/aie-wf2026-qdrant-edge-search/releases/download/v1/aie-edge-index.tar.gz")
 STATE = {}
